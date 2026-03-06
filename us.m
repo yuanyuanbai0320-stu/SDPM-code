@@ -1,0 +1,152 @@
+clear;
+close all;
+warning off;
+
+
+
+load guiyi        %176é"??–¤??·é"??–¤??·é"??§??u…??·?????366é”??–¤??·é”??–¤??·é”??§??
+data1=guiyi';
+data=data1;
+disp(class(guiyi)); 
+
+% sliding window for smoothing
+window_len=4;
+for i=1:size(data, 2)-window_len+1
+    newdata(:, i)=mean(data(:, i: i+window_len-1), 2);
+end
+
+
+ww=0;
+mm=1;   %??????????????????????????
+
+predict_len=4;    % embedding length
+trainlength=9;
+noisestrength=0;
+X=newdata+noisestrength*rand(size(newdata));% noise could be added
+
+
+weight_a=400;
+weight_b=300;
+weight_c=200;
+weight_d=100;
+weight_e=100;
+
+clear traindata_x_NN
+%aim_station=[1 3 5 9 11 15 17 20 24 27 31 35];
+for i=1:8
+    aim_station(i)=i;
+end
+load seed.mat
+rng(s)
+
+% 初始化变量存储预测结果
+all_predictions = {}; % 用于存储所有预测结果
+all_true_values = {}; % 用于存储所有真实值
+full_predictions = {}; % 用于拼接完整预测序列
+full_true_values = {}; % 用于拼接完整真实值
+
+for tt=1:length(aim_station)
+    ii=0;
+    clear real_y all_real_y traindata_y pcc Loss
+    concat_pred_y = [];  % <-- 新增：当前站点所有预测值拼接
+    concat_true_y = [];  % <-- 新增：当前站点所有真实值拼接
+
+    while size(X,2)-ii>=predict_len+trainlength-1
+        ii = ii+1;
+        xx=X(: , ii:end);
+        
+        traindata=xx(:,1:trainlength);
+        k=30;              % could be changed according to the dimension of X
+        
+        jd=aim_station(tt);
+        real_y=xx(jd, :);
+        all_real_y=X(jd, :);
+        traindata_y=real_y(1:trainlength);
+        clear NN_traindata;
+        
+        for i=1:trainlength
+            traindata_x_NN(:,i)=NN_F2_test(weight_a,weight_b,weight_c,weight_d,weight_e,traindata(:,i));
+        end
+        
+        w_flag=zeros(size(traindata_x_NN,1));
+        B_w=zeros(size(traindata_x_NN,1),predict_len);
+        for iter=1:1000         % cal coeffcient matrix B
+            indexr=randperm(setdiff(size(traindata_x_NN,1),jd));
+            random_idx=sort([jd,indexr(1:k-1)]);
+            traindata_x=traindata_x_NN(random_idx,1:trainlength);        % random chose k variables from F(D)
+            %traindata_x=traindata(indexr(1:k-1),1:trainlength);
+            clear predict_y super_bb super_AA w;
+            for i=1:size(traindata_x,1)
+                %  Ax=b,  1: x=pinv(A)*b,    2: x=A\b,    3: x=lsqnonneg(A,b)
+                b=traindata_x(i,1:trainlength-predict_len+1)';     % 1*(m-L+1)
+                clear A;
+                for j=1:trainlength-predict_len+1
+                    A(j,:)=traindata_y(j:j+predict_len-1);
+                end
+                %w(i,:)=(pinv(A)*b)';
+                w=(A\b)';
+                B_w(random_idx(i),:)=(B_w(random_idx(i),:)+w+w*(1-w_flag(random_idx(i))))/2;
+                w_flag(random_idx(i))=1;
+            end
+        end
+        
+        for i=1:size(traindata_x_NN,1)
+            kt=0;
+            clear bb;
+            AA=zeros(predict_len-1,predict_len-1);
+            for j=(trainlength-(predict_len-1))+1:trainlength
+                kt=kt+1;
+                bb(kt)=traindata_x_NN(i,j);
+                %col_unknown_y_num=j-(trainlength-(predict_len-1));
+                col_known_y_num=trainlength-j+1;
+                for r=1:col_known_y_num
+                    bb(kt)=bb(kt)-B_w(i,r)*traindata_y(trainlength-col_known_y_num+r);
+                end
+                AA(kt,1:predict_len-col_known_y_num)=B_w(i,col_known_y_num+1:predict_len);
+            end
+            
+            super_bb((predict_len-1)*(i-1)+1:(predict_len-1)*(i-1)+predict_len-1)=bb;
+            super_AA((predict_len-1)*(i-1)+1:(predict_len-1)*(i-1)+predict_len-1,:)=AA;
+        end
+        %  AA*x=bb,  1: x=pinv(AA)*bb,    2: x=AA\bb,    3: x=lsqnonneg(AA,bb)
+        %predict_super_y=(pinv(super_AA)*super_bb')';
+        pred_y=(super_AA\super_bb')';       % prediction result
+        
+        % 存储预测值
+        all_predictions{tt, ii} = pred_y;
+        all_true_values{tt, ii} = real_y(trainlength + 1:trainlength + predict_len - 1);
+
+        myreal=real_y(trainlength+1:trainlength+predict_len-1);
+        % 拼接预测序列
+        concat_pred_y = [concat_pred_y, pred_y];  % <-- 新增
+        concat_true_y = [concat_true_y, myreal];  % <-- 新增
+
+        pcc=corr(pred_y',myreal') ;
+        pcc_y(ii)=pcc;
+        Loss=sqrt(immse(pred_y, myreal))/std(myreal);
+        rmse=sqrt(immse(pred_y, myreal));
+        Loss_y(ii)=Loss;
+        rmse_y(ii)=rmse;
+        
+    end
+    full_predictions{tt} = concat_pred_y;   % <-- 新增
+    full_true_values{tt} = concat_true_y;   % <-- 新增
+    pcc_station(tt,:)=pcc_y;
+    loss_station(tt,:)=Loss_y;
+    rmse_station(tt,:)=rmse_y;
+end
+
+rmse_station_all=rmse_station;
+save rmse_station_all rmse_station_all 
+
+% 输出所有预测值
+disp('所有预测值：');
+disp(all_predictions);
+disp('所有真实值：');
+disp(all_true_values);
+
+% 可选：保存预测值到文件
+save('all_predictions.mat', 'all_predictions');
+save('all_true_values.mat', 'all_true_values');
+save('full_predictions.mat', 'full_predictions');
+save('full_true_values.mat', 'full_true_values');
